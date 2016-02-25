@@ -36,6 +36,7 @@ public class ApiLoadCommandLineRunner implements ApplicationRunner
 	static final String ENDPOINT = "host";
 	static final String FILE_OPTION = "file";
 	static final String COUNT_OPTION = "count";
+	static final String THREADS = "threads";
 	Logger log = Logger.getLogger(ApiLoadCommandLineRunner.class);
 
 	@Autowired
@@ -85,7 +86,7 @@ public class ApiLoadCommandLineRunner implements ApplicationRunner
 					}
 
 					RestTemplate restTemplate = new RestTemplate();
-					final ExecutorService pool = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+					final ExecutorService pool = Executors.newFixedThreadPool(applicationArguments.containsOption(THREADS) ? Integer.valueOf(applicationArguments.getOptionValues(THREADS).get(0)) : Runtime.getRuntime().availableProcessors());
 					final ExecutorCompletionService<Batch> completionService = new ExecutorCompletionService<>(pool);
 
 					final String apiHost = applicationArguments.getOptionValues(ENDPOINT).get(0);
