@@ -1,78 +1,118 @@
 package org.diekema.skunk.components;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.google.common.util.concurrent.RateLimiter;
+import org.apache.log4j.Logger;
 import org.springframework.http.*;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Created by rdiekema on 2/24/16.
  */
-public class AuthenticationProvider {
 
-    interface ApiEndpoints {
-        final static String SCORER_ROOT = "/sanctionslistscorer";
-        final static String SCORER_SCORE = SCORER_ROOT + "/api/scorer/score";
+@Component
+public class AuthenticationProvider
+{
+   Logger LOG = Logger.getLogger(AuthenticationProvider.class);
 
-        final static String SECURITY_ROOT = SCORER_ROOT + "/security";
-        final static String CSRF_TOKEN = SECURITY_ROOT + "/csrftoken";
-        final static String HANDSHAKE = SECURITY_ROOT + "/handshake";
-        final static String LOGIN = SECURITY_ROOT + "/login";
+	private static final String loginRequest = "{\n" +
+			"  \"loginTokens\": [\n" +
+			"   {\n" +
+			"      \"key\": \"com.bottomline.security.provider.login.user\",\n" +
+			"      \"value\": \"jdoe\"\n" +
+			"   },\n" +
+			"   {\n" +
+			"      \"key\": \"com.bottomline.security.provider.login.password\",\n" +
+			"      \"value\": \"jdoe\"\n" +
+			"   },\n" +
+			"   {\n" +
+			"      \"key\": \"com.bottomline.security.provider.login.realm\",\n" +
+			"      \"value\": \"demo\"\n" +
+			"   }\n" +
+			"  ],\n" +
+			"  \"apiVersion\": {\n" +
+			"        \"major\": \"1\",\n" +
+			"        \"minor\": \"1\",\n" +
+			"        \"patch\": \"0\",\n" +
+			"        \"build\": \"0\"\n" +
+			"   },\n" +
+			"  \"purpose\": \"scoring\"\n" +
+			"}";
+	private String ENDPOINT = "http://localhost";
+	private CountDownLatch authenticated = new CountDownLatch(1);
+	private AtomicReference<HttpHeaders> headers = new AtomicReference<>(new HttpHeaders());
+	final RateLimiter rateLimiter = RateLimiter.create(1);
 
-    }
+	public AuthenticationProvider()
+	{
+	}
 
-    @Autowired
-    RestTemplate restTemplate;
+	public synchronized void authenticate() throws IOException
+	{
+		authenticated = new CountDownLatch(1);
+		while(true)
+		{
+			rateLimiter.acquire();
+			RestTemplate restTemplate = new RestTemplate();
+			ObjectMapper objectMapper = new ObjectMapper();
+			ApiLogin apiLogin = objectMapper.readValue(loginRequest, ApiLogin.class);
 
-    private String ENDPOINT = "http://localhost";
+			HttpEntity httpEntity = new HttpEntity(null);
+			try
+			{
+				ResponseEntity<Handshake> handshakeResponseEntity = restTemplate.exchange(ENDPOINT + ApiEndpoints.HANDSHAKE, HttpMethod.GET, httpEntity, Handshake.class);
+				HttpHeaders responseHeaders = handshakeResponseEntity.getHeaders();
+				List<String> setCookie = responseHeaders.get(AuthenticationHeaders.SET_COOKIE);
+				List<String> csrf = responseHeaders.get(AuthenticationHeaders.CSRF);
 
-    private static final String loginRequest = "{\n" +
-            "  \"loginTokens\": [\n" +
-            "   {\n" +
-            "      \"key\": \"com.bottomline.security.provider.login.user\",\n" +
-            "      \"value\": \"jdoe\"\n" +
-            "   },\n" +
-            "   {\n" +
-            "      \"key\": \"com.bottomline.security.provider.login.password\",\n" +
-            "      \"value\": \"jdoe\"\n" +
-            "   },\n" +
-            "   {\n" +
-            "      \"key\": \"com.bottomline.security.provider.login.realm\",\n" +
-            "      \"value\": \"demo\"\n" +
-            "   }\n" +
-            "  ],\n" +
-            "  \"apiVersion\": {\n" +
-            "        \"major\": \"1\",\n" +
-            "        \"minor\": \"1\",\n" +
-            "        \"patch\": \"0\",\n" +
-            "        \"build\": \"0\"\n" +
-            "   },\n" +
-            "  \"purpose\": \"scoring\"\n" +
-            "}";
+				headers.get().setContentType(MediaType.APPLICATION_JSON);
+				headers.get().set(AuthenticationHeaders.CSRF, csrf.get(0));
+				headers.get().set(AuthenticationHeaders.COOKIE, setCookie.get(0));
 
-    private HttpHeaders headers = new HttpHeaders();
-    {
-        headers.setContentType(MediaType.APPLICATION_JSON);
-    }
+				HttpEntity<ApiLogin> apiLoginHttpEntity = new HttpEntity<>(apiLogin, headers.get());
+				ResponseEntity<String> responseEntity = restTemplate.exchange(ENDPOINT + ApiEndpoints.LOGIN, HttpMethod.POST, apiLoginHttpEntity, String.class);
+				assert (responseEntity.getStatusCode().is2xxSuccessful());
+				headers.get().set(AuthenticationHeaders.COOKIE, responseEntity.getHeaders().get(AuthenticationHeaders.SET_COOKIE).get(0));
+				headers.get().set(AuthenticationHeaders.CSRF, responseEntity.getHeaders().get(AuthenticationHeaders.CSRF).get(0));
+				authenticated.countDown();
+				break;
+			}
+			catch (RestClientException e)
+			{
+			   LOG.error(e.getMessage());
+			}
+		}
+	}
 
-    public AuthenticationProvider(final String endpoint) {
-        this.ENDPOINT = endpoint;
-    }
+	public String getENDPOINT()
+	{
+		return ENDPOINT;
+	}
 
-    public HttpHeaders authenticate() throws IOException {
-        ObjectMapper objectMapper = new ObjectMapper();
-        ApiLogin apiLogin = objectMapper.readValue(loginRequest, ApiLogin.class);
+	public void setENDPOINT(String ENDPOINT)
+	{
+		this.ENDPOINT = ENDPOINT;
+	}
 
+	public HttpHeaders getHeaders() throws InterruptedException
+	{
+		authenticated.await();
+		return headers.get();
+	}
 
-        HttpEntity<ApiLogin> apiLoginHttpEntity = new HttpEntity<>(apiLogin, headers);
-        ResponseEntity<String> responseEntity = restTemplate.exchange(ApiEndpoints.LOGIN, HttpMethod.GET, apiLoginHttpEntity, String.class);
-
-        return headers;
-    }
-
-
+	public interface AuthenticationHeaders
+	{
+		final static String CSRF = "X-Csrf";
+		final static String SET_COOKIE = "Set-Cookie";
+		final static String COOKIE = "Cookie";
+	}
 }
 
 

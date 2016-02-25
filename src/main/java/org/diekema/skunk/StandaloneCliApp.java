@@ -11,11 +11,13 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @EnableAutoConfiguration
 @ComponentScan
-public class StandaloneCliApp {
+public class StandaloneCliApp
+{
 
-    public static void main(String[] args) {
-        SpringApplication.run(StandaloneCliApp.class, args);
-    }
+	public static void main(String[] args)
+	{
+		SpringApplication.run(StandaloneCliApp.class, args);
+	}
 
 
 }
